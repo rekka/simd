@@ -377,6 +377,112 @@ fn inverse_simd4(b: &mut B) {
 
 }
 
+#[cfg(target_feature = "avx")]
+#[bench]
+fn inverse_simd8(b: &mut B) {
+    use simd::x86::sse3::Sse3F32x4;
+    use simd::x86::avx::{f32x8, LowHigh128, AvxF32x8};
+
+    let mut x = [f32x4::splat(0_f32); 4];
+    for i in 0..4 { x[i] = x[i].replace(i as u32, 1.0); }
+
+    let x = [from_halves(x[0], x[1]), from_halves(x[2], x[3])];
+
+    // The following functions simplify to single AVX/AVX2 instructions
+    fn from_halves(low: f32x4, high: f32x4) -> f32x8 {
+        f32x8::new(low.extract(0), low.extract(1), low.extract(2), low.extract(3),
+                   high.extract(0), high.extract(1), high.extract(2), high.extract(3))
+     }
+
+    fn rot1(x: f32x8) -> f32x8 {
+        f32x8::new(x.extract(1), x.extract(2), x.extract(3), x.extract(0),
+                   x.extract(5), x.extract(6), x.extract(7), x.extract(4))
+    }
+
+    fn rot2(x: f32x8) -> f32x8 {
+        rot1(rot1(x))
+    }
+
+    fn swap_lanes(x: f32x8) -> f32x8 {
+        f32x8::new(x.extract(4), x.extract(5), x.extract(6), x.extract(7),
+            x.extract(0), x.extract(1), x.extract(2), x.extract(3))
+    }
+
+    fn unpack_lo_pd(v: f32x8, w: f32x8) -> f32x8 {
+        f32x8::new(v.extract(0), v.extract(1), w.extract(0), w.extract(1),
+                   v.extract(4), v.extract(5), w.extract(4), w.extract(5),)
+    }
+    fn unpack_hi_pd(v: f32x8, w: f32x8) -> f32x8 {
+        f32x8::new(v.extract(2), v.extract(3), w.extract(2), w.extract(3),
+                   v.extract(6), v.extract(7), w.extract(6), w.extract(7),)
+    }
+
+    fn rot_shuf(x: f32x8) -> f32x8 {
+        f32x8::new(x.extract(5), x.extract(1), x.extract(7), x.extract(3),
+                   x.extract(6), x.extract(2), x.extract(4), x.extract(0))
+    }
+
+    b.iter(|| {
+        for _ in 0..100 {
+            let x = bb(&x);
+            let x01 = x[0];
+            let x23 = x[1];
+            let x3 = x23.high();
+
+            let x10 = swap_lanes(x01);
+            let x10r1 = rot1(x10);
+            let x10r2 = rot2(x10);
+
+            let x32 = swap_lanes(x23);
+            let x32r1 = rot1(x32);
+            let x32r2 = rot2(x32);
+
+            // multiply rotated rows to create adjugate of A
+            // adj(A) ~ reverse_rows([rot1(y32), rot1(y10)]) (up to signs)
+            let p01_23r2 = x01 * rot2(x23);
+            let y10 = p01_23r2 * x32r1;
+            let y32 = rot2(p01_23r2) * x10r1;
+
+            let y32 = y32 - p01_23r2 * x10r1;
+            let y10 = y10 - rot2(p01_23r2) * x32r1;
+
+            let p01_23r1 = x01 * rot1(x23);
+            let y32 = y32 + p01_23r1 * x10r2;
+            let y10 = y10 - p01_23r1 * x32r2;
+
+            let y32 = y32 + rot1(p01_23r1) * x10;
+            let y10 = y10 - rot1(p01_23r1) * x32;
+
+            let p01r1_23 = rot1(x01) * x23;
+            let y32 = y32 - p01r1_23 * x10r2;
+            let y10 = y10 + p01r1_23 * x32r2;
+
+            let y32 = y32 - rot1(p01r1_23) * x10;
+            let y10 = y10 + rot1(p01r1_23) * x32;
+
+            let det = rot1(y32).low() * x3;
+            let det = det.hsub(det);
+            let det = det.hadd(det);
+            // need to fix signs
+            let det_rcp = f32x4::new(-1.0, 1.0, -1.0, 1.0) / det;
+            let det_rcp = from_halves(det_rcp, det_rcp);
+
+            // multiplying here fixes the signs
+            let y32 = y32 * det_rcp;
+            let y10 = y10 * det_rcp;
+
+            // rotate and transpose the adjugate
+            let z32 = rot_shuf(y32);
+            let z10 = rot_shuf(y10);
+            let r01 = unpack_lo_pd(z10, z32);
+            let r23 = unpack_hi_pd(z10, z32);
+
+            bb(&[r01, r23]);
+        }
+     })
+
+}
+
 #[bench]
 fn transpose_naive(b: &mut B) {
     let x = [[0_f32; 4]; 4];
