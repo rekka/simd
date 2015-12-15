@@ -76,6 +76,46 @@ fn multiply_simd4_32(b: &mut B) {
 
 #[cfg(target_feature = "avx")]
 #[bench]
+fn multiply_simd8_32(b: &mut B) {
+    let x = [f32x8::splat(1.0_f32); 2];
+    let y = [f32x8::splat(2.0); 2];
+
+    fn splat2(low: f32, high: f32) -> f32x8 {
+        f32x8::new(low, low, low, low, high, high, high, high)
+    }
+
+    fn swap_lanes(x: f32x8) -> f32x8 {
+        f32x8::new(x.extract(4), x.extract(5), x.extract(6), x.extract(7),
+            x.extract(0), x.extract(1), x.extract(2), x.extract(3))
+    }
+
+    b.iter(|| {
+        for _ in 0..100 {
+        let (x, y) = bb((&x, &y));
+
+        let x01 = x[0];
+        let x10 = swap_lanes(x01);
+        let x23 = x[1];
+        let x32 = swap_lanes(x23);
+
+        let y01 = y[0];
+        let y23 = y[1];
+        bb(&[splat2(y01.extract(0), y01.extract(5)) * x01 +
+             splat2(y01.extract(2), y01.extract(7)) * x23 +
+             splat2(y01.extract(1), y01.extract(4)) * x10 +
+             splat2(y01.extract(3), y01.extract(6)) * x32,
+
+             splat2(y23.extract(0), y23.extract(5)) * x01 +
+             splat2(y23.extract(2), y23.extract(7)) * x23 +
+             splat2(y23.extract(1), y23.extract(4)) * x10 +
+             splat2(y23.extract(3), y23.extract(6)) * x32,
+             ]);
+        }
+    })
+}
+
+#[cfg(target_feature = "avx")]
+#[bench]
 fn multiply_simd4_64(b: &mut B) {
     let x = [f64x4::splat(1.0_f64); 4];
     let y = [f64x4::splat(2.0); 4];
